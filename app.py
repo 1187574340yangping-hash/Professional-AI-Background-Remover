@@ -651,34 +651,52 @@ class App:
                 paths = self.root.tk.splitlist(drop_data)
             except Exception:
                 paths = (direct_path,)
-        self.add(paths)
+        _added, rejected = self.add(paths)
         if not self.files:
-            self.status.set("没有识别到图片，请拖入 JPG、PNG、WEBP、BMP 或 TIFF")
+            detail = f"，已跳过 {rejected} 个损坏文件" if rejected else ""
+            self.status.set(f"没有识别到可用图片{detail}")
         elif self.auto_start.get():
-            self.status.set(f"已识别 {len(self.files)} 张，正在自动开始…")
+            detail = f"，跳过 {rejected} 个损坏文件" if rejected else ""
+            self.status.set(f"已识别 {len(self.files)} 张{detail}，正在自动开始…")
             self.root.after(150, self.start)
         return "copy"
 
+    @staticmethod
+    def _is_readable_image(path):
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                return False
+            with Image.open(path) as image:
+                return image.width > 0 and image.height > 0
+        except (OSError, ValueError):
+            return False
+
     def add(self, paths):
         existing = {str(p).lower() for p in self.files}
-        found = []
+        candidates = []
         for raw in paths:
             p = Path(raw)
             if p.is_dir():
-                found.extend(
+                candidates.extend(
                     x for x in p.rglob("*")
                     if x.suffix.lower() in EXTS
                     and not any(parent.name.endswith("_抠图") for parent in x.parents)
                     and not x.stem.endswith(("_透明", "_白底", "_黑底预览"))
                 )
             elif p.suffix.lower() in EXTS:
-                found.append(p)
+                candidates.append(p)
+        found = [p for p in candidates if self._is_readable_image(p)]
+        rejected = len(candidates) - len(found)
+        added = 0
         for p in found:
             if str(p).lower() not in existing:
                 self.files.append(p)
                 existing.add(str(p).lower())
+                added += 1
         self._refresh_files()
-        self.status.set(f"已加入 {len(self.files)} 张图片")
+        detail = f"，跳过 {rejected} 个损坏文件" if rejected else ""
+        self.status.set(f"已加入 {len(self.files)} 张图片{detail}")
+        return added, rejected
 
     def remove_one(self, path):
         if self.running:
