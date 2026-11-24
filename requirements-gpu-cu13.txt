@@ -1,0 +1,4 @@
+-r requirements.txt
+nvidia-cublas==13.3.0.5
+nvidia-cuda-runtime==13.3.29
+nvidia-cudnn-cu13==9.17.1.4
