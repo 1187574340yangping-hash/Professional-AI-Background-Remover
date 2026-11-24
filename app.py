@@ -40,6 +40,57 @@ LINE = "#E2E8F0"
 SOFT = "#F8FAFC"
 
 
+def draw_line_icon(name, color, canvas=96):
+    """Render a dependency-free, high-DPI line icon from scalable geometry."""
+    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    scale = canvas / 24
+    width = max(2, round(1.8 * scale))
+
+    def points(*values):
+        return tuple(round(value * scale) for value in values)
+
+    def line(values, **kwargs):
+        draw.line(points(*values), fill=color, width=width,
+                  joint="curve", **kwargs)
+
+    if name == "upload":
+        line((12, 17, 12, 5)); line((7, 10, 12, 5, 17, 10))
+        line((5, 15, 5, 20, 19, 20, 19, 15))
+    elif name == "trash":
+        draw.rounded_rectangle(points(6, 7, 18, 21), radius=round(1.5 * scale),
+                               outline=color, width=width)
+        line((4, 7, 20, 7)); line((9, 7, 9, 4, 15, 4, 15, 7))
+        line((10, 11, 10, 17)); line((14, 11, 14, 17))
+    elif name == "folder":
+        line((3, 7, 9, 7, 11, 10, 21, 10, 19, 20, 4, 20, 3, 7))
+    elif name == "stop":
+        draw.rounded_rectangle(points(6, 6, 18, 18), radius=round(scale),
+                               fill=color)
+    elif name == "retry":
+        draw.arc(points(4, 4, 20, 20), 35, 310, fill=color, width=width)
+        draw.polygon([points(18, 4), points(21, 8), points(16, 8)], fill=color)
+    elif name == "settings":
+        draw.ellipse(points(8.5, 8.5, 15.5, 15.5), outline=color, width=width)
+        for x1, y1, x2, y2 in ((12, 2, 12, 6), (12, 18, 12, 22),
+                               (2, 12, 6, 12), (18, 12, 22, 12),
+                               (5, 5, 7.5, 7.5), (16.5, 16.5, 19, 19),
+                               (19, 5, 16.5, 7.5), (7.5, 16.5, 5, 19)):
+            line((x1, y1, x2, y2))
+    elif name == "lock":
+        draw.rounded_rectangle(points(5, 10, 19, 21), radius=round(2 * scale),
+                               outline=color, width=width)
+        draw.arc(points(7.5, 3, 16.5, 14), 180, 360, fill=color, width=width)
+        line((12, 14, 12, 17))
+    elif name == "cutout":
+        draw.ellipse(points(3, 4, 9, 10), outline=color, width=width)
+        draw.ellipse(points(3, 14, 9, 20), outline=color, width=width)
+        line((8, 9, 20, 18)); line((8, 15, 20, 6));
+    elif name == "close":
+        line((7, 7, 17, 17)); line((17, 7, 7, 17))
+    return image
+
+
 def write_error_log(title, error):
     log = Path(__file__).with_name("error.log")
     details = "".join(traceback.format_exception(type(error), error, error.__traceback__))
@@ -96,6 +147,7 @@ class App:
         self.stop_event = threading.Event()
         self.events = queue.Queue()
         self.preview_images = {}
+        self.icons = {}
         self.last_result_thumb = None
         self.last_result_path = None
         self.current_source_path = None
@@ -114,6 +166,13 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(100, self._poll)
         self.root.after(250, self._detect_provider_async)
+
+    def _icon(self, name, color, size=18):
+        key = (name, color, size)
+        if key not in self.icons:
+            self.icons[key] = ctk.CTkImage(
+                draw_line_icon(name, color), size=(size, size))
+        return self.icons[key]
 
     # ------------------------------------------------------------------ errors
     def report_callback_error(self, exc_type, exc_value, exc_traceback):
@@ -250,7 +309,8 @@ class App:
         ctk.CTkFrame(side, fg_color="transparent").pack(fill="both", expand=True)
         ctk.CTkFrame(side, height=1, fg_color="#1F2937").pack(fill="x", padx=22, pady=(0, 8))
         ctk.CTkButton(
-            side, text="⚙  偏好设置", width=214, height=34,
+            side, text="偏好设置", image=self._icon("settings", "#CBD5E1", 16),
+            compound="left", width=214, height=34,
             fg_color="#1F2937", hover_color="#334155", text_color="#CBD5E1",
             font=(FONT, 11), anchor="w", command=self.open_settings,
         ).pack(padx=18, pady=(0, 10))
@@ -269,7 +329,9 @@ class App:
                      font=(FONT, 25, "bold")).pack(side="left")
         privacy = ctk.CTkFrame(header, fg_color="#DCFCE7", corner_radius=16, height=28)
         privacy.pack(side="right", padx=(8, 0))
-        ctk.CTkLabel(privacy, text="🔒  本地处理 · 图片不会上传", text_color="#15803D",
+        ctk.CTkLabel(privacy, text="本地处理 · 图片不会上传",
+                     image=self._icon("lock", "#15803D", 14), compound="left",
+                     text_color="#15803D",
                      font=(FONT, 10, "bold")).pack(padx=12, pady=4)
         self.status = ctk.StringVar(value="等待图片 · 拖入或点击选择产品图")
         self.header_status = ctk.CTkLabel(header, textvariable=self.status,
@@ -338,8 +400,7 @@ class App:
         inner = ctk.CTkFrame(self.drop, fg_color="transparent")
         inner.pack(expand=True, fill="both")
         # Upload icon drawn as vector-ish glyph to avoid extra assets
-        ctk.CTkLabel(inner, text="⬆", text_color=BRAND,
-                     font=(FONT, 42, "bold")).pack(pady=(14, 0))
+        ctk.CTkLabel(inner, text="", image=self._icon("upload", BRAND, 42)).pack(pady=(14, 0))
         ctk.CTkLabel(inner, text="将产品图或文件夹拖到这里", text_color=BRAND,
                      font=(FONT, 17, "bold")).pack(pady=(2, 0))
         ctk.CTkLabel(inner, text="也可以点击此区域选择图片", text_color="#3B82F6",
@@ -414,7 +475,8 @@ class App:
         self.file_count = ctk.StringVar(value="文件队列  0")
         ctk.CTkLabel(head, textvariable=self.file_count, text_color=INK,
                      font=(FONT, 13, "bold")).pack(side="left")
-        ctk.CTkButton(head, text="清空", width=54, height=26, fg_color="#F1F5F9",
+        ctk.CTkButton(head, text="清空", image=self._icon("trash", SUB, 14),
+                      compound="left", width=72, height=26, fg_color="#F1F5F9",
                       hover_color="#E2E8F0", text_color=SUB,
                       command=self.clear_files).pack(side="right")
         self.queue = ctk.CTkScrollableFrame(card, fg_color="transparent", height=70)
@@ -442,7 +504,8 @@ class App:
         self._slider(card, "边缘柔化", "让边缘过渡更自然", self.feather, 0, 1.5, 15)
 
         ctk.CTkButton(
-            card, text="↺  恢复推荐参数", height=28, fg_color="#EFF6FF",
+            card, text="恢复推荐参数", image=self._icon("retry", BRAND, 14),
+            compound="left", height=28, fg_color="#EFF6FF",
             hover_color="#DBEAFE", text_color=BRAND, font=(FONT, 10),
             command=lambda: self.apply_preset("产品图", announce=True),
         ).pack(fill="x", padx=18, pady=(2, 8))
@@ -467,7 +530,8 @@ class App:
         self.progress.pack(fill="x", padx=18, pady=(14, 10))
         self.progress.set(0)
         self.start_btn = ctk.CTkButton(
-            box, text="开始专业抠图", height=46, font=(FONT, 14, "bold"),
+            box, text="开始专业抠图", image=self._icon("cutout", "white", 20),
+            compound="left", height=46, font=(FONT, 14, "bold"),
             fg_color=BRAND, hover_color=BRAND_HOVER, command=self.start,
         )
         self.start_btn.pack(fill="x", padx=18, pady=(0, 8))
@@ -476,15 +540,18 @@ class App:
         row1 = ctk.CTkFrame(box, fg_color="transparent")
         row1.pack(fill="x", padx=18, pady=(0, 6))
         self.stop_btn = ctk.CTkButton(
-            row1, text="■ 停止", height=32, fg_color="#FEE2E2", hover_color="#FECACA",
+            row1, text="停止", image=self._icon("stop", "#B91C1C", 13),
+            compound="left", height=32, fg_color="#FEE2E2", hover_color="#FECACA",
             text_color="#B91C1C", state="disabled", command=self.stop)
         self.stop_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self.retry_btn = ctk.CTkButton(
-            row1, text="重试失败项", height=32, fg_color="#FFF7ED", hover_color="#FFEDD5",
+            row1, text="重试失败项", image=self._icon("retry", "#C2410C", 14),
+            compound="left", height=32, fg_color="#FFF7ED", hover_color="#FFEDD5",
             text_color="#C2410C", state="disabled", command=self.retry_failed)
         self.retry_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
         self.open_btn = ctk.CTkButton(
-            box, text="打开结果文件夹", height=32, fg_color="#F1F5F9",
+            box, text="打开结果文件夹", image=self._icon("folder", "#334155", 15),
+            compound="left", height=32, fg_color="#F1F5F9",
             hover_color="#E2E8F0", text_color="#334155", state="disabled",
             command=self.open_output)
         self.open_btn.pack(fill="x", padx=18, pady=(0, 14))
@@ -566,7 +633,8 @@ class App:
         state_lbl = ctk.CTkLabel(row, text="等待", text_color=SUB,
                                  font=(FONT, 10, "bold"), width=52)
         state_lbl.pack(side="right", padx=(2, 4))
-        ctk.CTkButton(row, text="✕", width=24, height=24, fg_color="transparent",
+        ctk.CTkButton(row, text="", image=self._icon("close", SUB, 13),
+                      width=24, height=24, fg_color="transparent",
                       hover_color="#FEE2E2", text_color=SUB, font=(FONT, 12),
                       command=lambda p=path: self.remove_one(p)).pack(side="right", padx=(0, 4))
         self.file_rows[key] = {"frame": row, "thumb": thumb, "size": size_lbl,
@@ -709,7 +777,7 @@ class App:
         if self.running:
             return
         # Rows do not expose Tk selection; removal is via per-row button.
-        self.status.set("点击每行右侧 ✕ 可移除单个文件")
+        self.status.set("点击每行右侧的删除图标可移除单个文件")
 
     def clear_files(self):
         if not self.running:
