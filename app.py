@@ -6,6 +6,7 @@ import subprocess
 import threading
 import ctypes
 import time
+import traceback
 from pathlib import Path
 
 import customtkinter as ctk
@@ -23,6 +24,17 @@ APP = "炮王专业抠图"
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
 
+def write_error_log(title, error):
+    log = Path(__file__).with_name("error.log")
+    details = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    try:
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n{details}")
+    except OSError:
+        pass
+    return log
+
+
 class App:
     def __init__(self):
         ctk.set_appearance_mode("light")
@@ -35,6 +47,7 @@ class App:
                 pass
         self.root = TkinterDnD.Tk() if TkinterDnD else ctk.CTk()
         self.root.title(APP)
+        self.root.report_callback_exception = self.report_callback_error
         icon = Path(__file__).with_name("assets") / "app.ico"
         if icon.exists():
             try:
@@ -64,6 +77,11 @@ class App:
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(100, self._poll)
+
+    def report_callback_error(self, exc_type, exc_value, exc_traceback):
+        from tkinter import messagebox
+        log = write_error_log("界面操作异常", exc_value)
+        messagebox.showerror(APP, f"操作失败：{exc_value}\n\n错误记录：{log}")
 
     def _load_settings(self):
         defaults = {
@@ -314,10 +332,14 @@ class App:
             return "copy"
         if self.auto_start.get():
             self.clear_files()
-        try:
-            paths = self.root.tk.splitlist(drop_data)
-        except Exception:
-            paths = (drop_data.strip().strip("{}\""),)
+        direct_path = drop_data.strip().strip("{}\"")
+        if Path(direct_path).exists():
+            paths = (direct_path,)
+        else:
+            try:
+                paths = self.root.tk.splitlist(drop_data)
+            except Exception:
+                paths = (direct_path,)
         self.add(paths)
         if not self.files:
             self.status.set("没有识别到图片，请拖入 JPG、PNG、WEBP、BMP 或 TIFF")
@@ -540,4 +562,12 @@ class App:
 
 
 if __name__ == "__main__":
-    App().run()
+    try:
+        App().run()
+    except Exception as exc:
+        log = write_error_log("启动异常", exc)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror(APP, f"软件启动失败：{exc}\n\n错误记录：{log}")
+        except Exception:
+            pass
