@@ -74,6 +74,14 @@ def remove_background(src: Path, model: str = "birefnet-general",
     src = Path(src)
     with Image.open(src) as opened:
         original = ImageOps.exif_transpose(opened).convert("RGBA")
+    # Preserve assets that already contain a meaningful transparent channel.
+    # Running segmentation and mask shrinking again damages soft glows,
+    # antialiased vector edges and translucent product materials.
+    alpha = original.getchannel("A")
+    histogram = alpha.histogram()
+    non_opaque = sum(histogram[:255])
+    if non_opaque / max(1, original.width * original.height) >= 0.01:
+        return original
     result = remove(original, session=_session(model))
     if not isinstance(result, Image.Image):
         from io import BytesIO
