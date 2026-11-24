@@ -54,6 +54,7 @@ class App:
         self.stop_event = threading.Event()
         self.events = queue.Queue()
         self.preview_images = {}
+        self.last_output_dir = None
         self.settings_path = Path(__file__).with_name("settings.json")
         self.settings = self._load_settings()
         self._build()
@@ -64,7 +65,8 @@ class App:
         defaults = {
             "model": "birefnet-general", "decon": 80, "shrink": 1,
             "feather": 0.4, "transparent": True,
-            "white": False, "black": False,
+            "white": False, "black": False, "auto_start": False,
+            "output_mode": "源图旁边", "output_dir": "",
         }
         try:
             saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
@@ -97,7 +99,23 @@ class App:
                           values=["birefnet-general", "birefnet-general-lite", "birefnet-portrait"],
                           width=182).pack(padx=24, pady=(6, 18))
         ctk.CTkLabel(side, text="完整版约 930MB\n首次使用自动下载\n之后可完全离线",
-                     justify="left", text_color="#94a3b8").pack(anchor="w", padx=24)
+                     justify="left", text_color="#94a3b8").pack(anchor="w", padx=24, pady=(0, 20))
+
+        self.output_mode = ctk.StringVar(value=self.settings["output_mode"])
+        self.output_dir = ctk.StringVar(value=self.settings["output_dir"])
+        self.auto_start = ctk.BooleanVar(value=self.settings["auto_start"])
+        ctk.CTkLabel(side, text="输出位置", text_color="#cbd5e1").pack(anchor="w", padx=24)
+        ctk.CTkSegmentedButton(side, values=["源图旁边", "统一文件夹"],
+                               variable=self.output_mode, width=182).pack(padx=24, pady=(6, 8))
+        ctk.CTkButton(side, text="选择统一文件夹", width=182, height=32,
+                      fg_color="#1e293b", hover_color="#334155",
+                      command=self.pick_output_dir).pack(padx=24)
+        self.output_dir_label = ctk.CTkLabel(side, textvariable=self.output_dir,
+                                             wraplength=178, justify="left",
+                                             text_color="#64748b", font=("Microsoft YaHei UI", 9))
+        self.output_dir_label.pack(anchor="w", padx=24, pady=(5, 14))
+        ctk.CTkSwitch(side, text="拖入后自动开始", variable=self.auto_start,
+                      text_color="#cbd5e1").pack(anchor="w", padx=24)
 
         main = ctk.CTkFrame(root, fg_color="#eef2f7", corner_radius=0)
         main.pack(side="left", fill="both", expand=True)
@@ -195,6 +213,11 @@ class App:
                                       fg_color="#fee2e2", hover_color="#fecaca",
                                       text_color="#b91c1c", state="disabled", command=self.stop)
         self.stop_btn.pack(side="bottom", padx=18, fill="x")
+        self.open_btn = ctk.CTkButton(right, text="打开结果文件夹", height=34,
+                                      fg_color="#f1f5f9", hover_color="#e2e8f0",
+                                      text_color="#334155", state="disabled",
+                                      command=self.open_output)
+        self.open_btn.pack(side="bottom", padx=18, pady=(0, 8), fill="x")
 
     def _refresh_files(self):
         self.listbox.delete(0, "end")
@@ -246,8 +269,21 @@ class App:
         paths = filedialog.askopenfilenames(title="选择图片", filetypes=[("图片", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff")])
         self.add(paths)
 
+    def pick_output_dir(self):
+        from tkinter import filedialog
+        selected = filedialog.askdirectory(title="选择统一输出文件夹",
+                                            initialdir=self.output_dir.get() or None)
+        if selected:
+            self.output_dir.set(selected)
+            self.output_mode.set("统一文件夹")
+            self.save_settings()
+
     def on_drop(self, event):
+        if self.auto_start.get() and not self.running:
+            self.clear_files()
         self.add(self.root.tk.splitlist(event.data))
+        if self.auto_start.get() and not self.running and self.files:
+            self.root.after(150, self.start)
         return "copy"
 
     def add(self, paths):
@@ -304,6 +340,11 @@ class App:
         if not any((self.transparent.get(), self.white.get(), self.black.get())):
             self.status.set("请至少选择一种输出格式")
             return
+        if self.output_mode.get() == "统一文件夹" and not self.output_dir.get():
+            self.status.set("请先选择统一输出文件夹")
+            self.pick_output_dir()
+            if not self.output_dir.get():
+                return
         self.save_settings()
         self.running = True
         self.stop_event.clear()
@@ -321,6 +362,7 @@ class App:
             "transparent": self.transparent.get(),
             "white": self.white.get(),
             "black": self.black.get(),
+            "output_dir": self.output_dir.get() if self.output_mode.get() == "统一文件夹" else None,
         }
         threading.Thread(target=self.worker, args=(job,), daemon=True).start()
 
@@ -330,12 +372,17 @@ class App:
             self.stop_btn.configure(state="disabled")
             self.status.set("正在停止：当前图片完成后结束队列")
 
+    def open_output(self):
+        if self.last_output_dir and Path(self.last_output_dir).exists():
+            subprocess.Popen(["explorer", str(self.last_output_dir)])
+
     def save_settings(self):
         values = {
             "model": self.model.get(), "decon": self.decon.get(),
             "shrink": self.shrink.get(), "feather": self.feather.get(),
             "transparent": self.transparent.get(), "white": self.white.get(),
-            "black": self.black.get(),
+            "black": self.black.get(), "auto_start": self.auto_start.get(),
+            "output_mode": self.output_mode.get(), "output_dir": self.output_dir.get(),
         }
         try:
             self.settings_path.write_text(
@@ -363,7 +410,7 @@ class App:
                 result = remove_background(path, job["model"], job["decon"],
                                            job["shrink"], job["feather"])
                 outputs = save_outputs(result, path, job["transparent"],
-                                       job["white"], job["black"])
+                                       job["white"], job["black"], job["output_dir"])
                 output_dirs.update(p.parent for p in outputs)
                 self.events.put(("preview", result.copy()))
             except Exception as exc:
@@ -390,7 +437,9 @@ class App:
                     prefix = "已停止" if cancelled else "完成"
                     self.status.set(f"{prefix}：成功 {completed-len(failed)}，失败 {len(failed)}" + ("\n" + "\n".join(failed[:3]) if failed else ""))
                     if dirs:
-                        subprocess.Popen(["explorer", str(next(iter(dirs)))])
+                        self.last_output_dir = next(iter(dirs))
+                        self.open_btn.configure(state="normal")
+                        subprocess.Popen(["explorer", str(self.last_output_dir)])
         except queue.Empty:
             pass
         self.root.after(100, self._poll)
