@@ -80,9 +80,26 @@ def save_outputs(result: Image.Image, src: Path, transparent=True,
     src = Path(src)
     root = Path(output_dir) if output_dir else src.parent / f"{src.stem}_抠图"
     root.mkdir(parents=True, exist_ok=True)
+    # A unified folder may receive files with identical names from different
+    # source folders. Keep the group together under one available stem instead
+    # of silently overwriting an earlier result.
+    safe_stem = src.stem
+    if output_dir:
+        suffixes = []
+        if transparent:
+            suffixes.append(("透明", ".png"))
+        if white:
+            suffixes.append(("白底", ".jpg"))
+        if black_preview:
+            suffixes.append(("黑底预览", ".jpg"))
+        number = 2
+        while any((root / f"{safe_stem}_{label}{ext}").exists()
+                  for label, ext in suffixes):
+            safe_stem = f"{src.stem}_{number}"
+            number += 1
     outputs = []
     if transparent:
-        path = root / f"{src.stem}_透明.png"
+        path = root / f"{safe_stem}_透明.png"
         result.save(path, "PNG", optimize=True)
         outputs.append(path)
     for enabled, color, suffix in (
@@ -92,7 +109,7 @@ def save_outputs(result: Image.Image, src: Path, transparent=True,
         if enabled:
             background = Image.new("RGBA", result.size, color)
             composed = Image.alpha_composite(background, result).convert("RGB")
-            path = root / f"{src.stem}_{suffix}.jpg"
+            path = root / f"{safe_stem}_{suffix}.jpg"
             composed.save(path, "JPEG", quality=96, subsampling=0, optimize=True)
             outputs.append(path)
     return outputs

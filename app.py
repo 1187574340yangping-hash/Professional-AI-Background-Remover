@@ -5,6 +5,7 @@ import queue
 import subprocess
 import threading
 import ctypes
+import time
 from pathlib import Path
 
 import customtkinter as ctk
@@ -55,6 +56,7 @@ class App:
         self.events = queue.Queue()
         self.preview_images = {}
         self.last_output_dir = None
+        self.failed_files = []
         self.settings_path = Path(__file__).with_name("settings.json")
         self.settings = self._load_settings()
         self._build()
@@ -218,6 +220,11 @@ class App:
                                       text_color="#334155", state="disabled",
                                       command=self.open_output)
         self.open_btn.pack(side="bottom", padx=18, pady=(0, 8), fill="x")
+        self.retry_btn = ctk.CTkButton(right, text="重试失败项", height=34,
+                                       fg_color="#fff7ed", hover_color="#ffedd5",
+                                       text_color="#c2410c", state="disabled",
+                                       command=self.retry_failed)
+        self.retry_btn.pack(side="bottom", padx=18, pady=(0, 8), fill="x")
 
     def _refresh_files(self):
         self.listbox.delete(0, "end")
@@ -292,7 +299,12 @@ class App:
         for raw in paths:
             p = Path(raw)
             if p.is_dir():
-                found.extend(x for x in p.rglob("*") if x.suffix.lower() in EXTS)
+                found.extend(
+                    x for x in p.rglob("*")
+                    if x.suffix.lower() in EXTS
+                    and not any(parent.name.endswith("_抠图") for parent in x.parents)
+                    and not x.stem.endswith(("_透明", "_白底", "_黑底预览"))
+                )
             elif p.suffix.lower() in EXTS:
                 found.append(p)
         for p in found:
@@ -372,6 +384,16 @@ class App:
             self.stop_btn.configure(state="disabled")
             self.status.set("正在停止：当前图片完成后结束队列")
 
+    def retry_failed(self):
+        if self.running or not self.failed_files:
+            return
+        self.files = list(self.failed_files)
+        self.failed_files = []
+        self.retry_btn.configure(state="disabled")
+        self._refresh_files()
+        self.progress.set(0)
+        self.status.set(f"已载入 {len(self.files)} 个失败项，准备重试")
+
     def open_output(self):
         if self.last_output_dir and Path(self.last_output_dir).exists():
             subprocess.Popen(["explorer", str(self.last_output_dir)])
@@ -401,11 +423,14 @@ class App:
         output_dirs = set()
         completed = 0
         cancelled = False
+        failed_paths = []
+        batch_started = time.perf_counter()
         for index, path in enumerate(files, 1):
             if self.stop_event.is_set():
                 cancelled = True
                 break
             try:
+                item_started = time.perf_counter()
                 self.events.put(("status", f"{index}/{total} 正在处理：{path.name}\n首次运行会下载模型，请稍候"))
                 result = remove_background(path, job["model"], job["decon"],
                                            job["shrink"], job["feather"])
@@ -415,9 +440,15 @@ class App:
                 self.events.put(("preview", result.copy()))
             except Exception as exc:
                 failed.append(f"{path.name}: {exc}")
+                failed_paths.append(path)
             completed = index
+            item_seconds = time.perf_counter() - item_started
+            average = (time.perf_counter() - batch_started) / completed
+            eta = max(0, total - completed) * average
+            self.events.put(("status", f"{completed}/{total} 已完成 · 本张 {item_seconds:.1f} 秒 · 预计剩余 {eta:.0f} 秒"))
             self.events.put(("progress", index / total))
-        self.events.put(("done", (completed, failed, output_dirs, cancelled)))
+        elapsed = time.perf_counter() - batch_started
+        self.events.put(("done", (completed, failed, failed_paths, output_dirs, cancelled, elapsed)))
 
     def _poll(self):
         try:
@@ -430,12 +461,14 @@ class App:
                     self.preview_images["after"] = ctk.CTkImage(preview, size=preview.size)
                     self.after_preview.configure(image=self.preview_images["after"], text="")
                 elif kind == "done":
-                    completed, failed, dirs, cancelled = data
+                    completed, failed, failed_paths, dirs, cancelled, elapsed = data
                     self.running = False
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     prefix = "已停止" if cancelled else "完成"
-                    self.status.set(f"{prefix}：成功 {completed-len(failed)}，失败 {len(failed)}" + ("\n" + "\n".join(failed[:3]) if failed else ""))
+                    self.failed_files = failed_paths
+                    self.retry_btn.configure(state="normal" if failed_paths else "disabled")
+                    self.status.set(f"{prefix}：成功 {completed-len(failed)}，失败 {len(failed)} · 用时 {elapsed:.1f} 秒" + ("\n" + "\n".join(failed[:3]) if failed else ""))
                     if dirs:
                         self.last_output_dir = next(iter(dirs))
                         self.open_btn.configure(state="normal")
