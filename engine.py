@@ -24,6 +24,13 @@ def _session(model: str):
         return _sessions[model]
 
 
+def active_provider(model: str) -> str:
+    """Return the execution provider actually used by the cached session."""
+    session = _session(model)
+    providers = session.inner_session.get_providers()
+    return providers[0] if providers else "Unknown"
+
+
 def decontaminate_edges(image: Image.Image, strength: int = 80) -> Image.Image:
     """Use nearby opaque foreground colors to replace background-polluted edge RGB."""
     rgba = image.convert("RGBA")

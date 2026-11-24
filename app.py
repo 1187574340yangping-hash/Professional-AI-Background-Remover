@@ -10,7 +10,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
-from engine import remove_background, save_outputs
+from engine import active_provider, remove_background, save_outputs
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -55,6 +55,7 @@ class App:
         self.stop_event = threading.Event()
         self.events = queue.Queue()
         self.preview_images = {}
+        self.last_result_thumb = None
         self.last_output_dir = None
         self.failed_files = []
         self.settings_path = Path(__file__).with_name("settings.json")
@@ -118,6 +119,10 @@ class App:
         self.output_dir_label.pack(anchor="w", padx=24, pady=(5, 14))
         ctk.CTkSwitch(side, text="拖入后自动开始", variable=self.auto_start,
                       text_color="#cbd5e1").pack(anchor="w", padx=24)
+        self.provider_status = ctk.StringVar(value="加速状态：等待首次处理")
+        ctk.CTkLabel(side, textvariable=self.provider_status, wraplength=180,
+                     justify="left", text_color="#64748b",
+                     font=("Microsoft YaHei UI", 9)).pack(side="bottom", anchor="w", padx=24, pady=22)
 
         main = ctk.CTkFrame(root, fg_color="#eef2f7", corner_radius=0)
         main.pack(side="left", fill="both", expand=True)
@@ -168,8 +173,14 @@ class App:
         preview = ctk.CTkFrame(left, height=210, fg_color="#f8fafc", corner_radius=12)
         preview.pack(fill="x", padx=16, pady=(0, 16))
         preview.pack_propagate(False)
-        ctk.CTkLabel(preview, text="预览检查", font=("Microsoft YaHei UI", 13, "bold"),
-                     text_color="#0f172a").pack(anchor="w", padx=14, pady=(10, 2))
+        preview_head = ctk.CTkFrame(preview, fg_color="transparent")
+        preview_head.pack(fill="x", padx=14, pady=(8, 2))
+        ctk.CTkLabel(preview_head, text="预览检查", font=("Microsoft YaHei UI", 13, "bold"),
+                     text_color="#0f172a").pack(side="left")
+        self.preview_bg = ctk.StringVar(value="透明")
+        ctk.CTkSegmentedButton(preview_head, values=["透明", "白底", "黑底"],
+                               width=150, height=26, variable=self.preview_bg,
+                               command=lambda _v: self.render_result_preview()).pack(side="right")
         views = ctk.CTkFrame(preview, fg_color="transparent")
         views.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.before_preview = ctk.CTkLabel(views, text="选择文件查看原图", fg_color="#e2e8f0",
@@ -328,11 +339,16 @@ class App:
             self.before_preview.configure(image=None, text=f"无法预览\n{exc}")
 
     @staticmethod
-    def _preview_image(image, checker=True, box=(250, 150)):
+    def _preview_image(image, checker=True, box=(250, 150), background=None):
         image = image.copy()
         image.thumbnail(box, Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", box, (241, 245, 249, 255))
-        if checker:
+        if background == "白底":
+            canvas = Image.new("RGBA", box, (255, 255, 255, 255))
+        elif background == "黑底":
+            canvas = Image.new("RGBA", box, (15, 23, 42, 255))
+        else:
+            canvas = Image.new("RGBA", box, (241, 245, 249, 255))
+        if checker and background not in ("白底", "黑底"):
             from PIL import ImageDraw
             draw = ImageDraw.Draw(canvas)
             cell = 12
@@ -344,6 +360,14 @@ class App:
         y = (box[1] - image.height) // 2
         canvas.alpha_composite(image, (x, y))
         return canvas
+
+    def render_result_preview(self):
+        if self.last_result_thumb is None:
+            return
+        preview = self._preview_image(
+            self.last_result_thumb, checker=True, background=self.preview_bg.get())
+        self.preview_images["after"] = ctk.CTkImage(preview, size=preview.size)
+        self.after_preview.configure(image=self.preview_images["after"], text="")
 
     def start(self):
         if self.running or not self.files:
@@ -424,6 +448,7 @@ class App:
         completed = 0
         cancelled = False
         failed_paths = []
+        provider_sent = False
         batch_started = time.perf_counter()
         for index, path in enumerate(files, 1):
             if self.stop_event.is_set():
@@ -437,7 +462,15 @@ class App:
                 outputs = save_outputs(result, path, job["transparent"],
                                        job["white"], job["black"], job["output_dir"])
                 output_dirs.update(p.parent for p in outputs)
-                self.events.put(("preview", result.copy()))
+                thumb = result.copy()
+                thumb.thumbnail((250, 150), Image.Resampling.LANCZOS)
+                self.events.put(("preview", thumb))
+                if not provider_sent:
+                    try:
+                        self.events.put(("provider", active_provider(job["model"])))
+                    except Exception:
+                        pass
+                    provider_sent = True
             except Exception as exc:
                 failed.append(f"{path.name}: {exc}")
                 failed_paths.append(path)
@@ -457,9 +490,11 @@ class App:
                 if kind == "status": self.status.set(data)
                 elif kind == "progress": self.progress.set(data)
                 elif kind == "preview":
-                    preview = self._preview_image(data, checker=True)
-                    self.preview_images["after"] = ctk.CTkImage(preview, size=preview.size)
-                    self.after_preview.configure(image=self.preview_images["after"], text="")
+                    self.last_result_thumb = data
+                    self.render_result_preview()
+                elif kind == "provider":
+                    name = "NVIDIA CUDA 显卡" if data == "CUDAExecutionProvider" else "CPU"
+                    self.provider_status.set(f"加速状态：{name}")
                 elif kind == "done":
                     completed, failed, failed_paths, dirs, cancelled, elapsed = data
                     self.running = False
