@@ -47,12 +47,13 @@ class App:
                 self.root.iconphoto(True, self.taskbar_icon)
             except Exception:
                 pass
-        self.root.geometry("1180x790")
+        self.root.geometry("1180x850")
         self.root.minsize(940, 650)
         self.files = []
         self.running = False
+        self.stop_event = threading.Event()
         self.events = queue.Queue()
-        self.preview_photo = None
+        self.preview_images = {}
         self.settings_path = Path(__file__).with_name("settings.json")
         self.settings = self._load_settings()
         self._build()
@@ -144,11 +145,29 @@ class App:
         self.listbox.pack(fill="both", expand=True, padx=16, pady=(6, 16))
         self.listbox.bind("<<ListboxSelect>>", self.show_selected)
 
+        preview = ctk.CTkFrame(left, height=210, fg_color="#f8fafc", corner_radius=12)
+        preview.pack(fill="x", padx=16, pady=(0, 16))
+        preview.pack_propagate(False)
+        ctk.CTkLabel(preview, text="预览检查", font=("Microsoft YaHei UI", 13, "bold"),
+                     text_color="#0f172a").pack(anchor="w", padx=14, pady=(10, 2))
+        views = ctk.CTkFrame(preview, fg_color="transparent")
+        views.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.before_preview = ctk.CTkLabel(views, text="选择文件查看原图", fg_color="#e2e8f0",
+                                           corner_radius=10, text_color="#64748b")
+        self.before_preview.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        self.after_preview = ctk.CTkLabel(views, text="完成后显示透明结果", fg_color="#e2e8f0",
+                                          corner_radius=10, text_color="#64748b")
+        self.after_preview.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
         ctk.CTkLabel(right, text="边缘处理", font=("Microsoft YaHei UI", 15, "bold"),
                      text_color="#0f172a").pack(anchor="w", padx=18, pady=(16, 8))
         self.decon = ctk.IntVar(value=self.settings["decon"])
         self.shrink = ctk.IntVar(value=self.settings["shrink"])
         self.feather = ctk.DoubleVar(value=self.settings["feather"])
+        self.preset = ctk.StringVar(value="产品图")
+        ctk.CTkLabel(right, text="快速预设", text_color="#475569").pack(anchor="w", padx=18)
+        ctk.CTkSegmentedButton(right, values=["产品图", "毛发", "透明材质", "硬边"],
+                               variable=self.preset, command=self.apply_preset).pack(fill="x", padx=18, pady=(5, 8))
         self._slider(right, "去白边强度", self.decon, 0, 100)
         self._slider(right, "边缘内缩", self.shrink, 0, 3, 4)
         self._slider(right, "柔化边缘", self.feather, 0, 1.5, 16)
@@ -172,6 +191,10 @@ class App:
                                        font=("Microsoft YaHei UI", 14, "bold"),
                                        command=self.start)
         self.start_btn.pack(side="bottom", padx=18, pady=18, fill="x")
+        self.stop_btn = ctk.CTkButton(right, text="停止队列", height=36,
+                                      fg_color="#fee2e2", hover_color="#fecaca",
+                                      text_color="#b91c1c", state="disabled", command=self.stop)
+        self.stop_btn.pack(side="bottom", padx=18, fill="x")
 
     def _refresh_files(self):
         self.listbox.delete(0, "end")
@@ -202,6 +225,21 @@ class App:
         slider = ctk.CTkSlider(parent, from_=low, to=high, number_of_steps=steps,
                                variable=var, command=lambda v: value.configure(text=f"{v:.1f}" if isinstance(var, ctk.DoubleVar) else str(int(v))))
         slider.pack(fill="x", padx=18, pady=(0, 6))
+        var.trace_add("write", lambda *_: value.configure(
+            text=f"{var.get():.1f}" if isinstance(var, ctk.DoubleVar) else str(int(var.get()))))
+
+    def apply_preset(self, name):
+        presets = {
+            "产品图": (80, 1, 0.4),
+            "毛发": (35, 0, 0.8),
+            "透明材质": (15, 0, 0.3),
+            "硬边": (95, 2, 0.0),
+        }
+        decon, shrink, feather = presets.get(name, presets["产品图"])
+        self.decon.set(decon)
+        self.shrink.set(shrink)
+        self.feather.set(feather)
+        self.status.set(f"已应用{name}预设")
 
     def pick(self):
         from tkinter import filedialog
@@ -229,7 +267,35 @@ class App:
         self.status.set(f"已加入 {len(self.files)} 张图片")
 
     def show_selected(self, _event=None):
-        pass
+        selected = self.listbox.curselection()
+        if not selected:
+            return
+        path = self.files[selected[0]]
+        try:
+            with Image.open(path) as source:
+                preview = self._preview_image(source.convert("RGBA"), checker=False)
+            self.preview_images["before"] = ctk.CTkImage(preview, size=preview.size)
+            self.before_preview.configure(image=self.preview_images["before"], text="")
+        except Exception as exc:
+            self.before_preview.configure(image=None, text=f"无法预览\n{exc}")
+
+    @staticmethod
+    def _preview_image(image, checker=True, box=(250, 150)):
+        image = image.copy()
+        image.thumbnail(box, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", box, (241, 245, 249, 255))
+        if checker:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(canvas)
+            cell = 12
+            for y in range(0, box[1], cell):
+                for x in range(0, box[0], cell):
+                    color = (226, 232, 240, 255) if (x // cell + y // cell) % 2 else (248, 250, 252, 255)
+                    draw.rectangle((x, y, x + cell, y + cell), fill=color)
+        x = (box[0] - image.width) // 2
+        y = (box[1] - image.height) // 2
+        canvas.alpha_composite(image, (x, y))
+        return canvas
 
     def start(self):
         if self.running or not self.files:
@@ -240,7 +306,9 @@ class App:
             return
         self.save_settings()
         self.running = True
+        self.stop_event.clear()
         self.start_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
         # Tk variables must only be read on the UI thread.  Capture a stable
         # job snapshot so a model/edge setting cannot change halfway through
         # a batch and the worker never calls Tcl from a background thread.
@@ -255,6 +323,12 @@ class App:
             "black": self.black.get(),
         }
         threading.Thread(target=self.worker, args=(job,), daemon=True).start()
+
+    def stop(self):
+        if self.running:
+            self.stop_event.set()
+            self.stop_btn.configure(state="disabled")
+            self.status.set("正在停止：当前图片完成后结束队列")
 
     def save_settings(self):
         values = {
@@ -278,7 +352,12 @@ class App:
         total = len(files)
         failed = []
         output_dirs = set()
+        completed = 0
+        cancelled = False
         for index, path in enumerate(files, 1):
+            if self.stop_event.is_set():
+                cancelled = True
+                break
             try:
                 self.events.put(("status", f"{index}/{total} 正在处理：{path.name}\n首次运行会下载模型，请稍候"))
                 result = remove_background(path, job["model"], job["decon"],
@@ -286,10 +365,12 @@ class App:
                 outputs = save_outputs(result, path, job["transparent"],
                                        job["white"], job["black"])
                 output_dirs.update(p.parent for p in outputs)
+                self.events.put(("preview", result.copy()))
             except Exception as exc:
                 failed.append(f"{path.name}: {exc}")
+            completed = index
             self.events.put(("progress", index / total))
-        self.events.put(("done", (total, failed, output_dirs)))
+        self.events.put(("done", (completed, failed, output_dirs, cancelled)))
 
     def _poll(self):
         try:
@@ -297,11 +378,17 @@ class App:
                 kind, data = self.events.get_nowait()
                 if kind == "status": self.status.set(data)
                 elif kind == "progress": self.progress.set(data)
+                elif kind == "preview":
+                    preview = self._preview_image(data, checker=True)
+                    self.preview_images["after"] = ctk.CTkImage(preview, size=preview.size)
+                    self.after_preview.configure(image=self.preview_images["after"], text="")
                 elif kind == "done":
-                    total, failed, dirs = data
+                    completed, failed, dirs, cancelled = data
                     self.running = False
                     self.start_btn.configure(state="normal")
-                    self.status.set(f"完成：成功 {total-len(failed)}，失败 {len(failed)}" + ("\n" + "\n".join(failed[:3]) if failed else ""))
+                    self.stop_btn.configure(state="disabled")
+                    prefix = "已停止" if cancelled else "完成"
+                    self.status.set(f"{prefix}：成功 {completed-len(failed)}，失败 {len(failed)}" + ("\n" + "\n".join(failed[:3]) if failed else ""))
                     if dirs:
                         subprocess.Popen(["explorer", str(next(iter(dirs)))])
         except queue.Empty:
