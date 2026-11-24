@@ -58,6 +58,7 @@ class App:
         self.last_result_thumb = None
         self.last_output_dir = None
         self.failed_files = []
+        self._last_drop = ("", 0.0)
         self.settings_path = Path(__file__).with_name("settings.json")
         self.settings = self._load_settings()
         self._build()
@@ -68,12 +69,15 @@ class App:
         defaults = {
             "model": "birefnet-general", "decon": 80, "shrink": 1,
             "feather": 0.4, "transparent": True,
-            "white": False, "black": False, "auto_start": False,
+            "white": False, "black": False, "auto_start": True,
             "output_mode": "源图旁边", "output_dir": "",
+            "drag_behavior_version": 1,
         }
         try:
             saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
             defaults.update({key: saved[key] for key in defaults if key in saved})
+            if saved.get("drag_behavior_version", 0) < 1:
+                defaults["auto_start"] = True
         except (OSError, ValueError, TypeError):
             pass
         return defaults
@@ -117,7 +121,7 @@ class App:
                                              wraplength=178, justify="left",
                                              text_color="#64748b", font=("Microsoft YaHei UI", 9))
         self.output_dir_label.pack(anchor="w", padx=24, pady=(5, 14))
-        ctk.CTkSwitch(side, text="拖入后自动开始", variable=self.auto_start,
+        ctk.CTkSwitch(side, text="拖入立即自动抠图", variable=self.auto_start,
                       text_color="#cbd5e1").pack(anchor="w", padx=24)
         self.provider_status = ctk.StringVar(value="加速状态：等待首次处理")
         ctk.CTkLabel(side, textvariable=self.provider_status, wraplength=180,
@@ -140,12 +144,15 @@ class App:
         drop_label.pack(expand=True, fill="both")
         for widget in (self.drop, drop_label):
             widget.bind("<Button-1>", lambda _e: self.pick())
+        self.drop_widgets = (self.root, main, self.drop, drop_label)
+        for widget in self.drop_widgets:
             if DND_FILES:
                 try:
                     widget.drop_target_register(DND_FILES)
                     widget.dnd_bind("<<Drop>>", self.on_drop)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.root.after(0, lambda message=str(exc):
+                                    self.status.set(f"拖放初始化失败：{message}"))
 
         content = ctk.CTkFrame(main, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=28, pady=16)
@@ -297,10 +304,25 @@ class App:
             self.save_settings()
 
     def on_drop(self, event):
-        if self.auto_start.get() and not self.running:
+        drop_data = str(event.data)
+        now = time.monotonic()
+        if drop_data == self._last_drop[0] and now - self._last_drop[1] < 0.5:
+            return "copy"
+        self._last_drop = (drop_data, now)
+        if self.running:
+            self.status.set("当前图片处理中，请完成后再拖入")
+            return "copy"
+        if self.auto_start.get():
             self.clear_files()
-        self.add(self.root.tk.splitlist(event.data))
-        if self.auto_start.get() and not self.running and self.files:
+        try:
+            paths = self.root.tk.splitlist(drop_data)
+        except Exception:
+            paths = (drop_data.strip().strip("{}\""),)
+        self.add(paths)
+        if not self.files:
+            self.status.set("没有识别到图片，请拖入 JPG、PNG、WEBP、BMP 或 TIFF")
+        elif self.auto_start.get():
+            self.status.set(f"已识别 {len(self.files)} 张，正在自动开始…")
             self.root.after(150, self.start)
         return "copy"
 
@@ -429,6 +451,7 @@ class App:
             "transparent": self.transparent.get(), "white": self.white.get(),
             "black": self.black.get(), "auto_start": self.auto_start.get(),
             "output_mode": self.output_mode.get(), "output_dir": self.output_dir.get(),
+            "drag_behavior_version": 1,
         }
         try:
             self.settings_path.write_text(
