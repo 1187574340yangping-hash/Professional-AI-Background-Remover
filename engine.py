@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 
 _sessions = {}
@@ -91,7 +91,8 @@ def remove_background(src: Path, model: str = "birefnet-general",
 
 
 def save_outputs(result: Image.Image, src: Path, transparent=True,
-                 white=True, black_preview=False, output_dir=None):
+                 white=True, black_preview=False, output_dir=None,
+                 background=False):
     src = Path(src)
     root = Path(output_dir) if output_dir else src.parent / f"{src.stem}_抠图"
     root.mkdir(parents=True, exist_ok=True)
@@ -107,6 +108,8 @@ def save_outputs(result: Image.Image, src: Path, transparent=True,
             suffixes.append(("白底", ".jpg"))
         if black_preview:
             suffixes.append(("黑底预览", ".jpg"))
+        if background:
+            suffixes.append(("背景", ".png"))
         number = 2
         while any((root / f"{safe_stem}_{label}{ext}").exists()
                   for label, ext in suffixes):
@@ -116,6 +119,19 @@ def save_outputs(result: Image.Image, src: Path, transparent=True,
     if transparent:
         path = root / f"{safe_stem}_透明.png"
         result.save(path, "PNG", optimize=True)
+        outputs.append(path)
+    if background:
+        # Complementary editable layer: keep original background pixels and
+        # make the extracted foreground area transparent.
+        with Image.open(src) as opened:
+            original = ImageOps.exif_transpose(opened).convert("RGBA")
+        if original.size != result.size:
+            original = original.resize(result.size, Image.Resampling.LANCZOS)
+        inverse_alpha = result.getchannel("A").point(lambda value: 255 - value)
+        inverse_alpha = ImageChops.multiply(original.getchannel("A"), inverse_alpha)
+        original.putalpha(inverse_alpha)
+        path = root / f"{safe_stem}_背景.png"
+        original.save(path, "PNG", optimize=True)
         outputs.append(path)
     for enabled, color, suffix in (
         (white, (255, 255, 255, 255), "白底"),

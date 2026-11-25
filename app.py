@@ -184,7 +184,7 @@ class App:
     def _load_settings(self):
         defaults = {
             "model": "birefnet-general", "decon": 80, "shrink": 1,
-            "feather": 0.4, "transparent": True,
+            "feather": 0.4, "transparent": True, "background": True,
             "white": False, "black": False, "auto_start": True,
             "output_mode": "源图旁边", "output_dir": "",
             "drag_behavior_version": 1,
@@ -203,7 +203,8 @@ class App:
         values = {
             "model": self.model.get(), "decon": self.decon.get(),
             "shrink": self.shrink.get(), "feather": self.feather.get(),
-            "transparent": self.transparent.get(), "white": self.white.get(),
+            "transparent": self.transparent.get(), "background": self.background.get(),
+            "white": self.white.get(),
             "black": self.black.get(), "auto_start": self.auto_start.get(),
             "output_mode": self.output_mode.get(), "output_dir": self.output_dir.get(),
             "drag_behavior_version": 1,
@@ -514,9 +515,11 @@ class App:
         ctk.CTkLabel(card, text="输出格式", text_color=INK,
                      font=(FONT, 12, "bold")).pack(anchor="w", padx=18, pady=(0, 4))
         self.transparent = ctk.BooleanVar(value=self.settings["transparent"])
+        self.background = ctk.BooleanVar(value=self.settings["background"])
         self.white = ctk.BooleanVar(value=self.settings["white"])
         self.black = ctk.BooleanVar(value=self.settings["black"])
-        for text, var in (("透明 PNG（默认）", self.transparent),
+        for text, var in (("产品透明 PNG", self.transparent),
+                          ("背景 PNG（产品处透明）", self.background),
                           ("白底 JPG（可选）", self.white),
                           ("黑底检查图", self.black)):
             ctk.CTkCheckBox(card, text=text, variable=var,
@@ -864,7 +867,8 @@ class App:
         if self.running or not self.files:
             self.status.set("请先拖入图片" if not self.files else "正在处理")
             return
-        if not any((self.transparent.get(), self.white.get(), self.black.get())):
+        if not any((self.transparent.get(), self.background.get(),
+                    self.white.get(), self.black.get())):
             self.status.set("请至少选择一种输出格式")
             return
         if self.output_mode.get() == "统一文件夹" and not self.output_dir.get():
@@ -889,6 +893,7 @@ class App:
             "shrink": self.shrink.get(),
             "feather": self.feather.get(),
             "transparent": self.transparent.get(),
+            "background": self.background.get(),
             "white": self.white.get(),
             "black": self.black.get(),
             "output_dir": self.output_dir.get() if self.output_mode.get() == "统一文件夹" else None,
@@ -993,7 +998,8 @@ class App:
                 result = remove_background(path, job["model"], job["decon"],
                                            job["shrink"], job["feather"])
                 outputs = save_outputs(result, path, job["transparent"],
-                                       job["white"], job["black"], job["output_dir"])
+                                       job["white"], job["black"], job["output_dir"],
+                                       background=job["background"])
                 output_dirs.update(p.parent for p in outputs)
                 thumb = result.copy()
                 thumb.thumbnail((360, 220), Image.Resampling.LANCZOS)
