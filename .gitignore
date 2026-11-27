@@ -11,3 +11,5 @@ build/
 *.zip
 *.exe
 error.log
+*.bak
+*.bak_*

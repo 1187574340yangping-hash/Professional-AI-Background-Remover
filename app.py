@@ -12,6 +12,7 @@ from pathlib import Path
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 from engine import active_provider, remove_background, save_outputs
+from magic_wand import MagicWandEditor
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -21,7 +22,7 @@ except Exception:
 
 
 APP = "炮王专业抠图"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.3.1"
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 FONT = "Microsoft YaHei UI"
 
@@ -86,6 +87,10 @@ def draw_line_icon(name, color, canvas=96):
         draw.ellipse(points(3, 4, 9, 10), outline=color, width=width)
         draw.ellipse(points(3, 14, 9, 20), outline=color, width=width)
         line((8, 9, 20, 18)); line((8, 15, 20, 6));
+    elif name == "wand":
+        line((5, 19, 17, 7)); line((15, 5, 19, 9)); line((13, 7, 17, 11))
+        line((5, 3, 5, 7)); line((3, 5, 7, 5))
+        line((20, 15, 20, 19)); line((18, 17, 22, 17))
     elif name == "close":
         line((7, 7, 17, 17)); line((17, 7, 7, 17))
     return image
@@ -158,6 +163,7 @@ class App:
         self.file_states = {}     # lowercased path -> state label
         self._stats = {}
         self.provider_known = False
+        self.gpu_name = "NVIDIA GPU"
         self._large_windows = []
 
         self.settings_path = Path(__file__).with_name("settings.json")
@@ -185,15 +191,17 @@ class App:
         defaults = {
             "model": "birefnet-general", "decon": 80, "shrink": 1,
             "feather": 0.4, "transparent": True, "background": True,
-            "white": False, "black": False, "auto_start": True,
+            "white": False, "black": False, "auto_start": False,
             "output_mode": "源图旁边", "output_dir": "",
-            "drag_behavior_version": 1,
+            "drag_behavior_version": 1, "workflow_version": 2,
         }
         try:
             saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
             defaults.update({key: saved[key] for key in defaults if key in saved})
             if saved.get("drag_behavior_version", 0) < 1:
                 defaults["auto_start"] = True
+            if saved.get("workflow_version", 0) < 2:
+                defaults["auto_start"] = False
             defaults["output_mode"] = normalize_output_mode(defaults["output_mode"])
         except (OSError, ValueError, TypeError):
             pass
@@ -207,7 +215,7 @@ class App:
             "white": self.white.get(),
             "black": self.black.get(), "auto_start": self.auto_start.get(),
             "output_mode": self.output_mode.get(), "output_dir": self.output_dir.get(),
-            "drag_behavior_version": 1,
+            "drag_behavior_version": 1, "workflow_version": 2,
         }
         try:
             self.settings_path.write_text(
@@ -325,9 +333,13 @@ class App:
 
         # Header
         header = ctk.CTkFrame(main, fg_color="transparent")
-        header.pack(fill="x", padx=30, pady=(22, 10))
-        ctk.CTkLabel(header, text="专业抠图工作台", text_color=INK,
-                     font=(FONT, 25, "bold")).pack(side="left")
+        header.pack(fill="x", padx=30, pady=(20, 10))
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.pack(side="left")
+        ctk.CTkLabel(title_box, text="专业抠图工作台", text_color=INK,
+                     font=(FONT, 24, "bold")).pack(anchor="w")
+        ctk.CTkLabel(title_box, text="三步完成批量去底 · 全程本地离线处理",
+                     text_color=SUB, font=(FONT, 10)).pack(anchor="w")
         privacy = ctk.CTkFrame(header, fg_color="#DCFCE7", corner_radius=16, height=28)
         privacy.pack(side="right", padx=(8, 0))
         ctk.CTkLabel(privacy, text="本地处理 · 图片不会上传",
@@ -338,6 +350,9 @@ class App:
         self.header_status = ctk.CTkLabel(header, textvariable=self.status,
                                           text_color=SUB, font=(FONT, 11))
         self.header_status.pack(side="right", padx=16)
+
+        # A visible workflow prevents users from losing the next action after upload.
+        self._build_workflow(main)
 
         # Status cards strip
         self._build_status_strip(main)
@@ -357,6 +372,68 @@ class App:
         self._build_preview(left)
         self._build_actions(right)
         self._build_params(right)
+
+    def _build_workflow(self, main):
+        flow = ctk.CTkFrame(main, fg_color=CARD, corner_radius=14, height=112)
+        flow.pack(fill="x", padx=30, pady=(0, 12))
+        flow.pack_propagate(False)
+        flow.grid_columnconfigure((0, 1, 2), weight=1, uniform="steps")
+
+        def step(column, number, title):
+            frame = ctk.CTkFrame(flow, fg_color=SOFT, corner_radius=11)
+            frame.grid(row=0, column=column, sticky="nsew", padx=6, pady=9)
+            head = ctk.CTkFrame(frame, fg_color="transparent")
+            head.pack(fill="x", padx=12, pady=(8, 3))
+            badge = ctk.CTkLabel(head, text=str(number), width=25, height=25,
+                                 corner_radius=13, fg_color="#CBD5E1",
+                                 text_color="#475569", font=(FONT, 11, "bold"))
+            badge.pack(side="left")
+            ctk.CTkLabel(head, text=title, text_color=INK,
+                         font=(FONT, 12, "bold")).pack(side="left", padx=8)
+            return frame, badge
+
+        one, self.step1_badge = step(0, 1, "导入图片")
+        self.step1_text = ctk.StringVar(value="拖入图片，或点击下方导入区")
+        ctk.CTkLabel(one, textvariable=self.step1_text, text_color=SUB,
+                     font=(FONT, 10)).pack(anchor="w", padx=12)
+
+        two, self.step2_badge = step(1, 2, "选择处理工具")
+        tools = ctk.CTkFrame(two, fg_color="transparent")
+        tools.pack(fill="x", padx=10, pady=(0, 7))
+        self.ai_tool_btn = ctk.CTkButton(
+            tools, text="AI 自动抠图", image=self._icon("cutout", "white", 15),
+            compound="left", height=30, state="disabled",
+            fg_color=BRAND, hover_color=BRAND_HOVER, command=self.start)
+        self.ai_tool_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.wand_tool_btn = ctk.CTkButton(
+            tools, text="魔法棒精修", image=self._icon("wand", "white", 15),
+            compound="left", height=30, state="disabled",
+            fg_color="#7C3AED", hover_color="#6D28D9", command=self.open_magic_wand)
+        self.wand_tool_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        three, self.step3_badge = step(2, 3, "预览与导出")
+        self.flow_open_btn = ctk.CTkButton(
+            three, text="打开导出结果", image=self._icon("folder", INK, 15),
+            compound="left", height=30, state="disabled",
+            fg_color="#E2E8F0", hover_color="#CBD5E1", text_color=INK,
+            command=self.open_output)
+        self.flow_open_btn.pack(fill="x", padx=10, pady=(0, 7))
+
+    def _update_workflow(self, stage=None):
+        has_files = bool(self.files)
+        has_result = bool(self.last_result_path and Path(self.last_result_path).exists())
+        self.step1_text.set(f"已导入 {len(self.files)} 张，下一步请选择工具" if has_files
+                            else "拖入图片，或点击下方导入区")
+        for button in (self.ai_tool_btn, self.wand_tool_btn):
+            button.configure(state="normal" if has_files and not self.running else "disabled")
+        self.flow_open_btn.configure(state="normal" if has_result else "disabled")
+        self.step1_badge.configure(fg_color=OK if has_files else "#CBD5E1",
+                                   text_color="white" if has_files else "#475569")
+        selected = stage == 2 or (has_files and not has_result and not self.running)
+        self.step2_badge.configure(fg_color=BRAND if selected else (OK if has_result else "#CBD5E1"),
+                                   text_color="white" if selected or has_result else "#475569")
+        self.step3_badge.configure(fg_color=OK if has_result else "#CBD5E1",
+                                   text_color="white" if has_result else "#475569")
 
     def _build_status_strip(self, main):
         strip = ctk.CTkFrame(main, fg_color=CARD, corner_radius=14, height=82)
@@ -382,17 +459,19 @@ class App:
             cell = ctk.CTkFrame(strip, fg_color=SOFT, corner_radius=10)
             cell.grid(row=0, column=i, sticky="nsew", padx=(6, 6), pady=10)
             strip.grid_columnconfigure(i, weight=1)
+            ctk.CTkFrame(cell, height=3, fg_color=color, corner_radius=2).pack(
+                fill="x", padx=12, pady=(9, 0))
             ctk.CTkLabel(cell, text=title, text_color=SUB,
-                         font=(FONT, 9)).pack(anchor="w", padx=12, pady=(8, 0))
+                         font=(FONT, 9)).pack(anchor="w", padx=12, pady=(6, 0))
             lbl = ctk.CTkLabel(cell, textvariable=self.stat_vars[key], text_color=color,
                                font=(FONT, 13, "bold"), anchor="w")
-            lbl.pack(anchor="w", padx=12, pady=(2, 8))
+            lbl.pack(anchor="w", padx=12, pady=(1, 6))
             if key == "current":
                 self.current_stat_label = lbl
 
     def _build_dropzone(self, main):
         self.drop = ctk.CTkFrame(
-            main, height=168, corner_radius=18, border_width=2,
+            main, height=128, corner_radius=18, border_width=2,
             border_color="#93C5FD", fg_color="#EFF6FF",
         )
         self.drop.pack(fill="x", padx=30, pady=(14, 0))
@@ -401,13 +480,13 @@ class App:
         inner = ctk.CTkFrame(self.drop, fg_color="transparent")
         inner.pack(expand=True, fill="both")
         # Upload icon drawn as vector-ish glyph to avoid extra assets
-        ctk.CTkLabel(inner, text="", image=self._icon("upload", BRAND, 42)).pack(pady=(14, 0))
-        ctk.CTkLabel(inner, text="将产品图或文件夹拖到这里", text_color=BRAND,
-                     font=(FONT, 17, "bold")).pack(pady=(2, 0))
+        ctk.CTkLabel(inner, text="", image=self._icon("upload", BRAND, 30)).pack(pady=(9, 0))
+        ctk.CTkLabel(inner, text="第 1 步：将产品图或文件夹拖到这里", text_color=BRAND,
+                     font=(FONT, 15, "bold")).pack(pady=(0, 0))
         ctk.CTkLabel(inner, text="也可以点击此区域选择图片", text_color="#3B82F6",
                      font=(FONT, 11)).pack()
         hint = ctk.CTkFrame(inner, fg_color="transparent")
-        hint.pack(pady=(6, 12))
+        hint.pack(pady=(4, 8))
         ctk.CTkLabel(hint, text="支持 JPG · PNG · WEBP · BMP · TIFF", text_color=SUB,
                      font=(FONT, 10)).pack(side="left", padx=(0, 14))
         self.auto_hint = ctk.StringVar(
@@ -456,13 +535,17 @@ class App:
 
         views = ctk.CTkFrame(card, fg_color="transparent")
         views.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        self.empty_before_icon = self._icon("folder", "#94A3B8", 34)
+        self.empty_after_icon = self._icon("cutout", "#94A3B8", 34)
         self.before_preview = ctk.CTkLabel(
-            views, text="选择文件查看原图", fg_color="#E2E8F0", corner_radius=10,
+            views, text="选择文件查看原图", image=self.empty_before_icon,
+            compound="top", fg_color="#E2E8F0", corner_radius=10,
             text_color=SUB, font=(FONT, 11))
         self.before_preview.pack(side="left", fill="both", expand=True, padx=(0, 6))
         self.before_preview.bind("<Button-1>", lambda _e: self.open_large_preview("before"))
         self.after_preview = ctk.CTkLabel(
-            views, text="抠图完成后显示结果", fg_color="#E2E8F0", corner_radius=10,
+            views, text="抠图完成后显示结果", image=self.empty_after_icon,
+            compound="top", fg_color="#E2E8F0", corner_radius=10,
             text_color=SUB, font=(FONT, 11))
         self.after_preview.pack(side="right", fill="both", expand=True, padx=(6, 0))
         self.after_preview.bind("<Button-1>", lambda _e: self.open_large_preview("after"))
@@ -728,9 +811,18 @@ class App:
             self.status.set(f"没有识别到可用图片{detail}")
         elif self.auto_start.get():
             detail = f"，跳过 {rejected} 个损坏文件" if rejected else ""
-            self.status.set(f"已识别 {len(self.files)} 张{detail}，正在自动开始…")
-            self.root.after(150, self.start)
+            self.status.set(f"已识别 {len(self.files)} 张{detail}，正在自动启动…")
+            # Start once as soon as Tk is idle, then use a delayed watchdog.
+            # Some Windows DND event sequences can cancel/lose a single timed
+            # callback, leaving a valid queue visible but never starting it.
+            self.root.after_idle(self._auto_start_after_drop)
+            self.root.after(800, self._auto_start_after_drop)
         return "copy"
+
+    def _auto_start_after_drop(self):
+        """Reliably start a dropped queue without creating duplicate workers."""
+        if self.auto_start.get() and self.files and not self.running:
+            self.start()
 
     @staticmethod
     def _is_readable_image(path):
@@ -765,6 +857,7 @@ class App:
                 existing.add(str(p).lower())
                 added += 1
         self._refresh_files()
+        self._update_workflow(stage=2)
         detail = f"，跳过 {rejected} 个损坏文件" if rejected else ""
         self.status.set(f"已加入 {len(self.files)} 张图片{detail}")
         return added, rejected
@@ -774,6 +867,7 @@ class App:
             return
         self.files = [p for p in self.files if p != path]
         self._refresh_files()
+        self._update_workflow(stage=2 if self.files else None)
         self.status.set(f"已加入 {len(self.files)} 张图片" if self.files else "等待图片")
 
     def remove_selected(self):
@@ -790,6 +884,8 @@ class App:
             self.status.set("等待图片 · 拖入或点击选择产品图")
             self._set_stats(current="—", progress="0 / 0", ok="0", fail="0",
                             elapsed="0s", eta="—")
+            self.last_result_path = None
+            self._update_workflow()
 
     # --------------------------------------------------------------- previews
     def show_selected(self, path):
@@ -801,6 +897,23 @@ class App:
             self.before_preview.configure(image=self.preview_images["before"], text="")
         except Exception as exc:
             self.before_preview.configure(image=None, text=f"无法预览\n{exc}")
+
+    def open_magic_wand(self):
+        path = self.current_source_path or (self.files[0] if self.files else None)
+        if not path or not Path(path).exists():
+            self.status.set("请先拖入图片，再打开魔法棒精修")
+            return
+        MagicWandEditor(self.root, path, self._magic_wand_saved)
+
+    def _magic_wand_saved(self, result_path, output_dir):
+        self.last_result_path = str(result_path)
+        self.last_output_dir = str(output_dir)
+        with Image.open(result_path) as opened:
+            self.last_result_thumb = opened.convert("RGBA").copy()
+        self.render_result_preview()
+        self.open_btn.configure(state="normal")
+        self._update_workflow(stage=3)
+        self.status.set(f"魔法棒精修完成：{result_path.name}")
 
     @staticmethod
     def _preview_image(image, checker=True, box=(360, 220), background=None):
@@ -878,10 +991,13 @@ class App:
                 return
         self.save_settings()
         self.running = True
+        self._update_workflow(stage=2)
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.header_status.configure(text_color=SUB)
+        self.status.set(
+            "正在加载 AI 模型并分析图片… 大尺寸或首次运行通常需要 30–90 秒")
         self._set_stats(progress=f"0 / {len(self.files)}", ok="0", fail="0",
                         elapsed="0s", eta="—")
         # Capture a stable snapshot on the UI thread; the worker never touches
@@ -969,7 +1085,17 @@ class App:
             try:
                 import onnxruntime as ort
                 available = ort.get_available_providers()
-                text = "CUDA 已启用" if "CUDAExecutionProvider" in available else "CPU 模式"
+                try:
+                    raw = subprocess.check_output(
+                        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                        text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        timeout=5).strip().splitlines()
+                    if raw:
+                        self.gpu_name = raw[0].replace("NVIDIA GeForce ", "")
+                except Exception:
+                    pass
+                text = (f"{self.gpu_name} · CUDA" if "CUDAExecutionProvider" in available
+                        else "CPU 模式")
                 self.events.put(("provider_hint", text))
             except Exception:
                 pass
@@ -1071,9 +1197,10 @@ class App:
                     self.render_result_preview()
                     self.show_selected(Path(source_path))
                 elif kind == "provider":
-                    name = "CUDA 已启用" if data == "CUDAExecutionProvider" else "CPU 模式"
+                    name = (f"{self.gpu_name} · CUDA"
+                            if data == "CUDAExecutionProvider" else "CPU 模式")
                     self.provider_status.set(name)
-                    self.gpu_dot.configure(text_color=OK if name.startswith("CUDA") else WARN)
+                    self.gpu_dot.configure(text_color=OK if data == "CUDAExecutionProvider" else WARN)
                     self.provider_known = True
                 elif kind == "provider_hint":
                     if not self.provider_known:
@@ -1099,6 +1226,7 @@ class App:
                         self.last_output_dir = next(iter(dirs))
                         self.open_btn.configure(state="normal")
                         subprocess.Popen(["explorer", str(self.last_output_dir)])
+                    self._update_workflow(stage=3 if ok else 2)
         except queue.Empty:
             pass
         self.root.after(100, self._poll)

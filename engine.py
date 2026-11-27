@@ -122,12 +122,18 @@ def save_outputs(result: Image.Image, src: Path, transparent=True,
         outputs.append(path)
     if background:
         # Complementary editable layer: keep original background pixels and
-        # make the extracted foreground area transparent.
+        # make the whole extracted foreground area fully transparent.  Do not
+        # simply invert the soft product alpha: that leaves semi-transparent
+        # product details in the background layer.  Binarize and dilate the
+        # mask slightly so the editable background has a clean product hole.
         with Image.open(src) as opened:
             original = ImageOps.exif_transpose(opened).convert("RGBA")
         if original.size != result.size:
             original = original.resize(result.size, Image.Resampling.LANCZOS)
-        inverse_alpha = result.getchannel("A").point(lambda value: 255 - value)
+        foreground_mask = result.getchannel("A").point(
+            lambda value: 255 if value >= 8 else 0)
+        foreground_mask = foreground_mask.filter(ImageFilter.MaxFilter(5))
+        inverse_alpha = ImageOps.invert(foreground_mask)
         inverse_alpha = ImageChops.multiply(original.getchannel("A"), inverse_alpha)
         original.putalpha(inverse_alpha)
         path = root / f"{safe_stem}_背景.png"
